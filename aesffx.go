@@ -71,7 +71,10 @@ func (f FFXCipher) Encrypt(src string) (string, error) {
 
 		lmin := min(len(A), len(fOut))
 
-		C := blockAddition(lmin, int(f.radix), A, fOut)
+		C, err := blockAddition(lmin, int(f.radix), A, fOut)
+		if err != nil {
+			return "", nil
+		}
 
 		A = B
 		B = C
@@ -99,21 +102,24 @@ func (f FFXCipher) Decrypt(src string) (string, error) {
 
 		lmin := min(len(C), len(fOut))
 
-		A = blockSubtraction(lmin, int(f.radix), C, fOut)
+		A, err = blockSubtraction(lmin, int(f.radix), C, fOut)
+		if err != nil {
+			return "", nil
+		}
 	}
 	plain := A + B
 	return plain, nil
 }
 
 // blockAddition computes the block-wise radix addition of x and y.
-func blockAddition(n, radix int, x, y string) string {
+func blockAddition(n, radix int, x, y string) (string, error) {
 	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	yInt, err := strconv.ParseInt(y, radix, n*8)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	blockSum := (xInt + yInt) % int64(math.Pow(float64(radix), float64(n)))
@@ -122,18 +128,18 @@ func blockAddition(n, radix int, x, y string) string {
 	if len(out) < n {
 		out = strings.Repeat("0", n-len(out)) + out
 	}
-	return out
+	return out, nil
 }
 
 // blockSubtraction computes the block-wise radix subtraction of x and y.
-func blockSubtraction(n, radix int, x, y string) string {
+func blockSubtraction(n, radix int, x, y string) (string, error) {
 	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 	yInt, err := strconv.ParseInt(y, radix, n*8)
 	if err != nil {
-		panic(err)
+		return "", err
 	}
 
 	diff := xInt - yInt
@@ -147,7 +153,7 @@ func blockSubtraction(n, radix int, x, y string) string {
 	if len(out) < n {
 		out = strings.Repeat("0", n-len(out)) + out
 	}
-	return out
+	return out, nil
 }
 
 // feistalRound runs the given block through the modified feistel network.
@@ -188,7 +194,7 @@ func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, bl
 
 	aes, err := aes.NewCipher(f.key)
 	if err != nil {
-		panic(err)
+		return "", nil
 	}
 
 	// Y <- first d+4 bytes of (Y | AESK(Y XOR [1]16) | AESK(Y XOR [2]16) | AESK(Y XOR [3]16)...)
@@ -199,7 +205,7 @@ func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, bl
 	for yTemp.Len() < (d + 4) {
 		h, err := hex.DecodeString(strings.Repeat("0"+strconv.Itoa(i), 16))
 		if err != nil {
-			panic(err)
+			return "", nil
 		}
 		aes.Encrypt(c.Bytes(), xorBytes(bigY, h))
 		yTemp.Write(c.Bytes())
