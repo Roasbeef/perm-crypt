@@ -16,7 +16,8 @@ const (
 	numRounds = 10
 )
 
-// NewCipher....
+// NewCipher creates a new cipher capable of encrypting and decrypting messages
+// using the AES-FFX mode for format-preserving encryption.
 func NewCipher(radix uint32, key, tweak []byte) (*FFXCipher, error) {
 	var maxLength uint32 = (1 << 32) - 1
 
@@ -44,7 +45,7 @@ func NewCipher(radix uint32, key, tweak []byte) (*FFXCipher, error) {
 	}, nil
 }
 
-// FFXCipher....
+// FFXCipher represents the parameters needed for AES-FFX.
 type FFXCipher struct {
 	key   []byte
 	tweak []byte
@@ -54,8 +55,8 @@ type FFXCipher struct {
 	maxLength uint32
 }
 
-// Encrypt...
-func (f FFXCipher) Encrypt(src string) string {
+// Encrypt encrypts the given plaintext, producing ciphertext output.
+func (f FFXCipher) Encrypt(src string) (string, error) {
 	n := uint32(len(src))
 	l := split(uint32(n))
 
@@ -63,7 +64,11 @@ func (f FFXCipher) Encrypt(src string) string {
 	B := src[l:]
 
 	for i := 0; i < numRounds; i++ {
-		fOut := f.feistelRound(n, f.tweak, i, B)
+		fOut, err := f.feistelRound(n, f.tweak, i, B)
+		if err != nil {
+			return "", err
+		}
+
 		lmin := min(len(A), len(fOut))
 
 		C := blockAddition(lmin, int(f.radix), A, fOut)
@@ -72,11 +77,11 @@ func (f FFXCipher) Encrypt(src string) string {
 		B = C
 	}
 	cipher := A + B
-	return cipher
+	return cipher, nil
 }
 
-// Decrypt...
-func (f FFXCipher) Decrypt(src string) string {
+// Decrypt decrypts the given ciphertext, producing plaintext output.
+func (f FFXCipher) Decrypt(src string) (string, error) {
 	n := uint32(len(src))
 	l := split(uint32(n))
 
@@ -87,16 +92,20 @@ func (f FFXCipher) Decrypt(src string) string {
 		C := B
 		B = A
 
-		fOut := f.feistelRound(n, f.tweak, i, B)
+		fOut, err := f.feistelRound(n, f.tweak, i, B)
+		if err != nil {
+			return "", nil
+		}
+
 		lmin := min(len(C), len(fOut))
 
 		A = blockSubtraction(lmin, int(f.radix), C, fOut)
 	}
 	plain := A + B
-	return plain
+	return plain, nil
 }
 
-// blockAddition...
+// blockAddition computes the block-wise radix addition of x and y.
 func blockAddition(n, radix int, x, y string) string {
 	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
@@ -116,7 +125,7 @@ func blockAddition(n, radix int, x, y string) string {
 	return out
 }
 
-// blockSubtraction...
+// blockSubtraction computes the block-wise radix subtraction of x and y.
 func blockSubtraction(n, radix int, x, y string) string {
 	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
@@ -141,8 +150,8 @@ func blockSubtraction(n, radix int, x, y string) string {
 	return out
 }
 
-// feistalRound
-func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, block string) string {
+// feistalRound runs the given block through the modified feistel network.
+func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, block string) (string, error) {
 	t := len(tweak)
 	beta := int(math.Ceil(float64(msgLength) / 2))
 
@@ -160,43 +169,18 @@ func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, bl
 	}
 
 	// p <- [vers] | [method] | [addition] | [radix] | [rnds(n)] | [split(n)] | [n] | [t]
-	var p bytes.Buffer
-	p.Write([]byte{0x01})                                      // version
-	p.Write([]byte{0x02})                                      // method
-	p.Write([]byte{0x01})                                      // addition
-	p.Write([]byte{0x00})                                      // 0 byte prefix to force 3 bytes
-	err := binary.Write(&p, binary.BigEndian, uint16(f.radix)) // write 2 bytes of radix
-	maybeExit(err)
-	p.Write([]byte{0x0a})                                             // number of rounds is 10
-	err = binary.Write(&p, binary.BigEndian, uint8(split(msgLength))) // split
-	maybeExit(err)
-	err = binary.Write(&p, binary.BigEndian, msgLength)
-	maybeExit(err)
-	err = binary.Write(&p, binary.BigEndian, uint32(t))
-	maybeExit(err)
+	p, err := generateP(msgLength, f.radix, t)
+	if err != nil {
+		return "", err
+	}
 
 	// q <- tweak | [0]^((−t−b−1) mod 16) | [roundNum] | [numradix(B)]
-	var q bytes.Buffer
-	q.Write(tweak)
-	numPads := ((-1 * t) - b - 1) % 16
-	if numPads < 0 {
-		numPads += 16
+	err = generateQ(block, p, tweak, t, b, roundNum, f.radix)
+	if err != nil {
+		return "", err
 	}
-	zeroPad, err := hex.DecodeString(strings.Repeat("00", numPads))
-	maybeExit(err)
-	q.Write(zeroPad)
-	err = binary.Write(&q, binary.BigEndian, uint8(roundNum))
-	maybeExit(err)
-
-	var bBuffer bytes.Buffer
-	radixBlock, err := strconv.ParseUint(block, int(f.radix), b*8)
-	err = binary.Write(&bBuffer, binary.BigEndian, radixBlock)
-	maybeExit(err)
-	q.Write(bBuffer.Bytes()[bBuffer.Len()-b:])
-	maybeExit(err)
 
 	// Y = CBC-MAC_k(P || Q)
-	p.Write(q.Bytes())
 	bigY, err := cbcMac(f.key, p.Bytes())
 	if err != nil {
 		panic(err)
@@ -233,15 +217,16 @@ func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, bl
 	if len(fOut) < beta {
 		fOut = strings.Repeat("0", beta-len(fOut)) + fOut
 	}
-	return fOut
+	return fOut, nil
 }
 
-// split...
+// split calculates the index to split the input string for our maximally
+// balanced Feistel rounds.
 func split(n uint32) uint32 {
 	return uint32(math.Floor(float64(n) / 2))
 }
 
-// cbcMac...
+// cbcMac computes the AES-CBC-MAC of the msg with the given key.
 func cbcMac(key, msg []byte) ([]byte, error) {
 	if len(msg)%16 != 0 {
 		return nil, fmt.Errorf("message length must be a multiple of 16, got %v", len(msg))
@@ -267,7 +252,8 @@ func cbcMac(key, msg []byte) ([]byte, error) {
 	return y, nil
 }
 
-// xorBytes....
+// xorBytes returns a new byte slice which is the result of XOR'ing each byte
+// amongst the passed arguments.
 func xorBytes(x, y []byte) []byte {
 	out := make([]byte, len(x))
 	for i := 0; i < len(x); i++ {
@@ -276,15 +262,77 @@ func xorBytes(x, y []byte) []byte {
 	return out
 }
 
-func maybeExit(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
+// min returns the minimum of x and y.
 func min(x, y int) int {
 	if x < y {
 		return x
 	}
 	return y
+}
+
+// generateP creates the first half of the IV our feistel round.
+// This function returns a bytes.Buffer in so Q can easily be concatenated to
+// it.
+func generateP(mlen uint32, radix uint32, tweaklen int) (*bytes.Buffer, error) {
+	var p bytes.Buffer
+	p.Write([]byte{0x01})                                    // version
+	p.Write([]byte{0x02})                                    // method
+	p.Write([]byte{0x01})                                    // addition
+	p.Write([]byte{0x00})                                    // 0 byte prefix to force 3 bytes
+	err := binary.Write(&p, binary.BigEndian, uint16(radix)) // write 2 bytes of radix
+	if err != nil {
+		return nil, err
+	}
+
+	p.Write([]byte{0x0a})                                        // number of rounds is 10
+	err = binary.Write(&p, binary.BigEndian, uint8(split(mlen))) // split
+	if err != nil {
+		return nil, err
+	}
+
+	err = binary.Write(&p, binary.BigEndian, mlen)
+	if err != nil {
+		return nil, err
+	}
+
+	err = binary.Write(&p, binary.BigEndian, uint32(tweaklen))
+	if err != nil {
+		return nil, err
+	}
+
+	return &p, nil
+}
+
+func generateQ(block string, buf *bytes.Buffer, tweak []byte, tlen int, blockLen int, i int, radix uint32) error {
+	buf.Write(tweak)
+	numPads := ((-1 * tlen) - blockLen - 1) % 16
+	if numPads < 0 {
+		numPads += 16
+	}
+
+	zeroPad, err := hex.DecodeString(strings.Repeat("00", numPads))
+	if err != nil {
+		return err
+	}
+
+	buf.Write(zeroPad)
+	err = binary.Write(buf, binary.BigEndian, uint8(i))
+	if err != nil {
+		return err
+	}
+
+	var bBuffer bytes.Buffer
+	radixBlock, err := strconv.ParseUint(block, int(radix), blockLen*8)
+	if err != nil {
+		return err
+	}
+
+	err = binary.Write(&bBuffer, binary.BigEndian, radixBlock)
+	if err != nil {
+		return err
+	}
+
+	buf.Write(bBuffer.Bytes()[bBuffer.Len()-blockLen:])
+
+	return nil
 }
