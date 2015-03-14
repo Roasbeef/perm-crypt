@@ -3,6 +3,7 @@ package aesffx
 import (
 	"bytes"
 	"crypto/aes"
+	"crypto/cipher"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
@@ -15,7 +16,6 @@ const (
 	numRounds = 10
 )
 
-// TODO(roasbeef): Tweak??
 // NewCipher....
 func NewCipher(radix uint32, key, tweak []byte) (*FFXCipher, error) {
 	var maxLength uint32 = (1 << 32) - 1
@@ -47,8 +47,8 @@ func NewCipher(radix uint32, key, tweak []byte) (*FFXCipher, error) {
 // FFXCipher....
 type FFXCipher struct {
 	key   []byte
-	tweak []byte // TODO(roasbeef): de-couple tweak?
-	radix uint32 // TODO(roasbeef): make unit16?
+	tweak []byte
+	radix uint32
 
 	minLength uint32
 	maxLength uint32
@@ -63,16 +63,15 @@ func (f FFXCipher) Encrypt(src string) string {
 	B := src[l:]
 
 	for i := 0; i < numRounds; i++ {
-		C := blockAddition(int(l), int(f.radix), A, f.feistalRound(n, f.tweak, i, B))
+		fOut := f.feistalRound(n, f.tweak, i, B)
+		lmin := min(len(A), len(fOut))
+
+		C := blockAddition(lmin, int(f.radix), A, fOut)
 
 		A = B
 		B = C
 	}
 	cipher := A + B
-	/*	if len(cipher) != len(src) {
-		fmt.Println("redo", cipher)
-		goto redo
-	}*/
 	return cipher
 }
 
@@ -84,11 +83,14 @@ func (f FFXCipher) Decrypt(src string) string {
 	A := src[:l]
 	B := src[l:]
 
-	for i := numRounds; i > 0; i-- {
+	for i := numRounds - 1; i > -1; i-- {
 		C := B
 		B = A
 
-		A = blockSubtraction(int(l), int(f.radix), C, f.feistalRound(n, f.tweak, i, B))
+		fOut := f.feistalRound(n, f.tweak, i, B)
+		lmin := min(len(C), len(fOut))
+
+		A = blockSubtraction(lmin, int(f.radix), C, fOut)
 	}
 	plain := A + B
 	return plain
@@ -96,59 +98,65 @@ func (f FFXCipher) Decrypt(src string) string {
 
 // blockAddition...
 func blockAddition(n, radix int, x, y string) string {
-	xInt, err := strconv.ParseUint(x, radix, n*8)
+	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
 		panic(err)
 	}
-	yInt, err := strconv.ParseUint(y, radix, n*8)
+	yInt, err := strconv.ParseInt(y, radix, n*8)
 	if err != nil {
 		panic(err)
 	}
 
-	blockSum := (xInt + yInt) % uint64(math.Pow(float64(radix), float64(n)))
-	return strconv.FormatUint(blockSum, radix)
+	blockSum := (xInt + yInt) % int64(math.Pow(float64(radix), float64(n)))
+
+	out := strconv.FormatInt(blockSum, radix)
+	if len(out) < n {
+		out = strings.Repeat("0", n-len(out)) + out
+	}
+	return out
 }
 
 // blockSubtraction...
 func blockSubtraction(n, radix int, x, y string) string {
-	// Use hex.Encode??
-	xInt, err := strconv.ParseUint(x, radix, n*8)
+	xInt, err := strconv.ParseInt(x, radix, n*8)
 	if err != nil {
 		panic(err)
 	}
-	yInt, err := strconv.ParseUint(y, radix, n*8)
+	yInt, err := strconv.ParseInt(y, radix, n*8)
 	if err != nil {
 		panic(err)
 	}
 
 	diff := xInt - yInt
-	mod := uint64(math.Pow(float64(radix), float64(n)))
+	mod := int64(math.Pow(float64(radix), float64(n)))
 	blockDiff := diff % mod
 	if blockDiff < 0 {
 		blockDiff += mod
 	}
-	return strconv.FormatUint(blockDiff, radix)
+
+	out := strconv.FormatInt(blockDiff, radix)
+	if len(out) < n {
+		out = strings.Repeat("0", n-len(out)) + out
+	}
+	return out
 }
 
 // feistalRound...
 func (f FFXCipher) feistalRound(msgLength uint32, tweak []byte, roundNum int, block string) string {
 	t := len(tweak)
-	beta := int(math.Ceil(float64(msgLength / 2)))
+	beta := int(math.Ceil(float64(msgLength) / 2))
 
 	// b = ceil(ceil(beta * log_2(radix)) / 8)
-	b := int(math.Ceil(
-		math.Ceil(float64(
-			int(beta)*int(math.Log2(float64(f.radix))),
-		)) / 8,
-	))
+	b := int(math.Ceil(math.Ceil(float64(beta)*math.Log2(float64(f.radix))) / 8))
+
 	// d = 4 * ceil(b/4)
-	d := 4 * int(math.Ceil(float64(b/4)))
+	d := 4 * int(math.Ceil(float64(b)/4))
 
 	var m int
 	if roundNum%2 == 0 {
-		m = int(math.Floor(float64(msgLength / 2)))
+		m = int(math.Floor(float64(msgLength) / 2))
 	} else {
-		m = int(math.Ceil(float64(msgLength / 2)))
+		m = int(math.Ceil(float64(msgLength) / 2))
 	}
 
 	// p <- [vers] | [method] | [addition] | [radix] | [rnds(n)] | [split(n)] | [n] | [t]
@@ -181,10 +189,10 @@ func (f FFXCipher) feistalRound(msgLength uint32, tweak []byte, roundNum int, bl
 	maybeExit(err)
 
 	var bBuffer bytes.Buffer
-	radixBlock, err := strconv.ParseUint(block, int(f.radix), b*8) // TODO(roasbeef): Proper size?
+	radixBlock, err := strconv.ParseUint(block, int(f.radix), b*8)
 	err = binary.Write(&bBuffer, binary.BigEndian, radixBlock)
 	maybeExit(err)
-	q.Write(bBuffer.Bytes()[:b])
+	q.Write(bBuffer.Bytes()[bBuffer.Len()-b:])
 	maybeExit(err)
 
 	// Y = CBC-MAC_k(P || Q)
@@ -220,17 +228,20 @@ func (f FFXCipher) feistalRound(msgLength uint32, tweak []byte, roundNum int, bl
 	y := binary.BigEndian.Uint64(yTemp.Bytes())
 	z := y % uint64(math.Pow(float64(f.radix), float64(m)))
 
-	// Should be uint???
-	return strconv.FormatUint(z, int(f.radix))
+	fOut := strconv.FormatUint(z, int(f.radix))
+	// TODO(roasbeef): Factor out into padding funciton
+	if len(fOut) < beta {
+		fOut = strings.Repeat("0", beta-len(fOut)) + fOut
+	}
+	return fOut
 }
 
 // split...
 func split(n uint32) uint32 {
-	return uint32(math.Floor(float64(n / 2)))
+	return uint32(math.Floor(float64(n) / 2))
 }
 
 // cbcMac...
-// TODO(roasbeef): TESTS!!!
 func cbcMac(key, msg []byte) ([]byte, error) {
 	if len(msg)%16 != 0 {
 		return nil, fmt.Errorf("message length must be a multiple of 16, got %v", len(msg))
@@ -240,26 +251,25 @@ func cbcMac(key, msg []byte) ([]byte, error) {
 	}
 
 	// Create a new aes cipher from our key.
-	aes, err := aes.NewCipher(key)
+	aesBlock, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
+	// Initialize aes in CBC mode with a zero IV.
 	y := make([]byte, 16, 16)
-	msgLength := len(msg) / 16
+	cbc := cipher.NewCBCEncrypter(aesBlock, y)
 
-	for i := 0; i < msgLength; i += 16 {
-		// y = AES_ECB(m_i XOR y)
+	for i := 0; i < len(msg); i += 16 {
 		x := msg[i:(i + 16)]
-		aes.Encrypt(y, xorBytes(x, y))
+		cbc.CryptBlocks(y, x)
 	}
-
 	return y, nil
 }
 
 // xorBytes....
 func xorBytes(x, y []byte) []byte {
-	out := make([]byte, len(y))
+	out := make([]byte, len(x))
 	for i := 0; i < len(x); i++ {
 		out[i] = y[i] ^ x[i]
 	}
@@ -270,4 +280,11 @@ func maybeExit(err error) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
 }
