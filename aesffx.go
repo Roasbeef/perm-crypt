@@ -63,7 +63,7 @@ func (f FFXCipher) Encrypt(src string) string {
 	B := src[l:]
 
 	for i := 0; i < numRounds; i++ {
-		fOut := f.feistalRound(n, f.tweak, i, B)
+		fOut := f.feistelRound(n, f.tweak, i, B)
 		lmin := min(len(A), len(fOut))
 
 		C := blockAddition(lmin, int(f.radix), A, fOut)
@@ -87,7 +87,7 @@ func (f FFXCipher) Decrypt(src string) string {
 		C := B
 		B = A
 
-		fOut := f.feistalRound(n, f.tweak, i, B)
+		fOut := f.feistelRound(n, f.tweak, i, B)
 		lmin := min(len(C), len(fOut))
 
 		A = blockSubtraction(lmin, int(f.radix), C, fOut)
@@ -141,8 +141,8 @@ func blockSubtraction(n, radix int, x, y string) string {
 	return out
 }
 
-// feistalRound...
-func (f FFXCipher) feistalRound(msgLength uint32, tweak []byte, roundNum int, block string) string {
+// feistalRound
+func (f FFXCipher) feistelRound(msgLength uint32, tweak []byte, roundNum int, block string) string {
 	t := len(tweak)
 	beta := int(math.Ceil(float64(msgLength) / 2))
 
