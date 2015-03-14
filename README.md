@@ -16,8 +16,10 @@ plainString := "0123456789"
 
 ffx, _ := aesffx.NewCipher(10, key, tweak)
 
-cipher, err := ffx.Encrypt(plainString)
+cipher, _ := ffx.Encrypt(plainString)
 
 plain, _ := ffx.Decrypt(cipher)
 	
 ```
+-----
+##### WARNING: You probably shouldn't use this in a production environment. This lib was created primarily as yak-shaving for a research project. 
