@@ -16,8 +16,8 @@ plainString := "0123456789"
 
 ffx, _ := aesffx.NewCipher(10, key, tweak)
 
-cipher, err := aes.Encrypt(plainString)
+cipher, err := ffx.Encrypt(plainString)
 
-plain, _ := aes.Decrypt(cipher)
+plain, _ := ffx.Decrypt(cipher)
 	
 ```
